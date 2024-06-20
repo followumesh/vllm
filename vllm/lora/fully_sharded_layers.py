@@ -123,11 +123,12 @@ def _mcp_apply(x, bias, layer):
                                 layer.lora_b_stacked[idx],
                                 layer.indices[:layer.indices_len[0]], 0, 1.0,
                                 left_offset, shard_size)
-        bias = layer.bias_stacked[idx]
-        if bias is not None:
-            bias = bias.view(-1, bias.shape[-1])
-            bias = bias[layer.indices[:layer.indices_len[0]]]
-            output[:, left_offset: left_offset + shard_size] += bias
+        if layer.bias_stacked is not None:
+            bias = layer.bias_stacked[idx]
+            if bias is not None:
+                bias = bias.view(-1, bias.shape[-1])
+                bias = bias[layer.indices[:layer.indices_len[0]]]
+                output[:, left_offset: left_offset + shard_size] += bias
 
         left_offset += shard_size
 

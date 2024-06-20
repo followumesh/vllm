@@ -470,7 +470,7 @@ class LoRAModelManager:
             if module_lora:
                 module_lora.optimize()
                 module.set_lora(index, module_lora.lora_a, module_lora.lora_b,
-                                module_lora.bias, module_lora.embeddings_tensor)
+                                module_lora.embeddings_tensor, module_lora.bias)
             else:
                 module.reset_lora(index)
         return True

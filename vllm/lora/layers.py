@@ -66,9 +66,9 @@ def _apply_lora(
     x: torch.Tensor,
     lora_a_stacked: torch.Tensor,
     lora_b_stacked: torch.Tensor,
-    bias_stacked: torch.Tensor,
     indices: torch.Tensor,
     output: torch.Tensor,
+    bias_stacked: Optional[torch.Tensor] = None,
 ):
     """Applies lora to each input.
 
@@ -104,10 +104,10 @@ def _apply_lora_packed_nslice(
     x: torch.Tensor,
     lora_a_stacked: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     lora_b_stacked: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    bias_stacked: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     indices: torch.Tensor,
     output: torch.Tensor,
     output_slices: Tuple[int, ...],
+    bias_stacked: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
 ):
     """Applies lora to each input.
 
@@ -141,11 +141,12 @@ def _apply_lora_packed_nslice(
                        lora_b_stacked[slice_idx],
                        indices, 0, 1.0, offset_left, output_slices[slice_idx])
 
-        bias = bias_stacked[slice_idx]
-        if bias is not None:
-            bias = bias.view(-1, bias.shape[-1])
-            bias = bias[indices]
-            output[:, offset_left: offset_left + output_slices[slice_idx]] += bias
+        if bias_stacked is not None:
+            bias = bias_stacked[slice_idx]
+            if bias is not None:
+                bias = bias.view(-1, bias.shape[-1])
+                bias = bias[indices]
+                output[:, offset_left: offset_left + output_slices[slice_idx]] += bias
 
         offset_left += output_slices[slice_idx]
     return output.view_as(org_output)
@@ -194,8 +195,8 @@ class BaseLayerWithLoRA(nn.Module):
         index: int,
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
-        bias: Optional[torch.Tensor],
         embeddings_tensor: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor] = None,
     ):
         """Overwrites lora tensors at index."""
         ...
@@ -299,8 +300,8 @@ class VocabParallelEmbeddingWithLoRA(BaseLayerWithLoRA):
         index: int,
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
-        bias: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
         self.lora_a_stacked[index, :lora_a.shape[0], :lora_a.shape[1]].copy_(
@@ -453,8 +454,8 @@ class ColumnParallelLinearWithLoRA(BaseLayerWithLoRA):
         index: int,
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
-        bias: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
 
@@ -493,9 +494,9 @@ class ColumnParallelLinearWithLoRA(BaseLayerWithLoRA):
             x,
             self.lora_a_stacked,
             self.lora_b_stacked,
-            self.bias_stacked,
             self.indices[:self.indices_len[0]],
             output,
+            self.bias_stacked,
         )
         return output
 
@@ -640,8 +641,8 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
         index: int,
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
-        bias: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
 
@@ -657,7 +658,7 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
             self.lora_b_stacked[0][
                 index, 0, :lora_b[0].shape[1], :lora_b[0].shape[0]].copy_(
                     lora_b[0].T, non_blocking=True)
-        if bias[0] is not None:
+        if bias is not None and bias[0] is not None:
             self.bias_stacked[0][
                 index, 0, :bias[0].shape[0]].copy_(
                     bias[0].T, non_blocking=True)
@@ -668,7 +669,7 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
             self.lora_b_stacked[1][
                 index, 0, :lora_b[1].shape[1], :lora_b[1].shape[0]].copy_(
                     lora_b[1].T, non_blocking=True)
-        if bias[1] is not None:
+        if bias is not None and bias[1] is not None:
             self.bias_stacked[1][index, 0, :bias[1].shape[0]].copy_(
                     bias[1].T, non_blocking=True)
 
@@ -679,10 +680,10 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
             x,
             self.lora_a_stacked,
             self.lora_b_stacked,
-            self.bias_stacked,
             self.indices[:self.indices_len[0]],
             output,
             (self.output_dim, self.output_dim),
+            self.bias_stacked,
         )
         return output
 
@@ -725,8 +726,8 @@ class QKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
         index: int,
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
-        bias: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
         if self.tp_size > 1:
@@ -955,8 +956,8 @@ class MergedQKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
         index: int,
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
-        bias: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
 
@@ -994,15 +995,16 @@ class MergedQKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
                 index, 0, :lora_a[2].shape[1], :lora_a[2].shape[0]].copy_(
                     lora_a[2].T, non_blocking=True)
 
-        if bias[0] is not None:
-            self.bias_stacked[0][index, 0, :bias[0].shape[0]].copy_(
-                bias[0].T, non_blocking=True)
-        if bias[1] is not None:
-            self.bias_stacked[1][index, 0, :bias[1].shape[0]].copy_(
-                bias[1].T, non_blocking=True)
-        if bias[2] is not None:
-            self.bias_stacked[2][index, 0, :bias[2].shape[0]].copy_(
-                bias[2].T, non_blocking=True)
+        if bias is not None:
+            if bias[0] is not None:
+                self.bias_stacked[0][index, 0, :bias[0].shape[0]].copy_(
+                    bias[0].T, non_blocking=True)
+            if bias[1] is not None:
+                self.bias_stacked[1][index, 0, :bias[1].shape[0]].copy_(
+                    bias[1].T, non_blocking=True)
+            if bias[2] is not None:
+                self.bias_stacked[2][index, 0, :bias[2].shape[0]].copy_(
+                    bias[2].T, non_blocking=True)
 
     def apply(self, x: torch.Tensor,
               bias: Optional[torch.Tensor]) -> torch.Tensor:
@@ -1011,10 +1013,10 @@ class MergedQKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
             x,
             self.lora_a_stacked,
             self.lora_b_stacked,
-            self.bias_stacked,
             self.indices[:self.indices_len[0]],
             output,
             self.output_slices,
+            self.bias_stacked,
         )
         return output
 
@@ -1105,8 +1107,8 @@ class RowParallelLinearWithLoRA(BaseLayerWithLoRA):
         index: int,
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
-        bias: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
 
@@ -1145,9 +1147,9 @@ class RowParallelLinearWithLoRA(BaseLayerWithLoRA):
             x,
             self.lora_a_stacked,
             self.lora_b_stacked,
-            self.bias_stacked,
             self.indices[:self.indices_len[0]],
             output,
+            self.bias_stacked,
         )
         return output
 
@@ -1310,8 +1312,8 @@ class LogitsProcessorWithLoRA(BaseLayerWithLoRA):
         index: int,
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
-        bias: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
         self.lora_a_stacked[index,
