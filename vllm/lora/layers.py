@@ -1401,9 +1401,9 @@ class LogitsProcessorWithLoRA(BaseLayerWithLoRA):
             hidden_states,
             self.lora_a_stacked,
             self.lora_b_stacked,
-            None,
             self.indices[:self.indices_len[1]],
             logits,
+            None,
         )
 
         # Remove paddings in vocab (if any).
