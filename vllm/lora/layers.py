@@ -721,6 +721,24 @@ class QKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
         self.kv_proj_total_size = (self.base_layer.total_num_kv_heads *
                                    self.base_layer.head_size)
 
+    def slice_lora_b(self, lora_b: torch.Tensor) -> torch.Tensor:
+        tp_rank = get_tensor_model_parallel_rank()
+        self.q_shard_id = tp_rank
+        self.kv_shard_id = tp_rank // self.base_layer.num_kv_head_replicas
+        lora_b_q = lora_b[:, self.q_proj_shard_size *
+                          self.q_shard_id:self.q_proj_shard_size *
+                          (self.q_shard_id + 1)]
+        k_offset = self.q_proj_total_size
+        lora_b_k = lora_b[:, k_offset +
+                          self.kv_proj_shard_size * self.kv_shard_id:k_offset +
+                          self.kv_proj_shard_size * (self.kv_shard_id + 1)]
+        v_offset = k_offset + self.kv_proj_total_size
+        lora_b_v = lora_b[:, v_offset +
+                          self.kv_proj_shard_size * self.kv_shard_id:v_offset +
+                          self.kv_proj_shard_size * (self.kv_shard_id + 1)]
+        lora_b = torch.cat([lora_b_q, lora_b_k, lora_b_v], dim=1)
+        return lora_b
+
     def set_lora(
         self,
         index: int,
@@ -731,21 +749,8 @@ class QKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
     ):
         self.reset_lora(index)
         if self.tp_size > 1:
-            tp_rank = get_tensor_model_parallel_rank()
-            self.q_shard_id = tp_rank
-            self.kv_shard_id = tp_rank // self.base_layer.num_kv_head_replicas
-            lora_b_q = lora_b[:, self.q_proj_shard_size *
-                              self.q_shard_id:self.q_proj_shard_size *
-                              (self.q_shard_id + 1)]
-            k_offset = self.q_proj_total_size
-            lora_b_k = lora_b[:, k_offset + self.kv_proj_shard_size *
-                              self.kv_shard_id:k_offset +
-                              self.kv_proj_shard_size * (self.kv_shard_id + 1)]
-            v_offset = k_offset + self.kv_proj_total_size
-            lora_b_v = lora_b[:, v_offset + self.kv_proj_shard_size *
-                              self.kv_shard_id:v_offset +
-                              self.kv_proj_shard_size * (self.kv_shard_id + 1)]
-            lora_b = torch.cat([lora_b_q, lora_b_k, lora_b_v], dim=1)
+            lora_a = self.slice_lora_a(lora_a)
+            lora_b = self.slice_lora_b(lora_b)
 
             if bias is not None:
                 bias_q = bias[self.q_proj_shard_size *
@@ -773,6 +778,7 @@ class QKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
                                 bias.T, non_blocking=True)
 
     @classmethod
+    @_not_fully_sharded_can_replace
     def can_replace_layer(cls, source_layer: nn.Module,
                           lora_config: LoRAConfig, packed_modules_list: List,
                           model_config: Optional[PretrainedConfig]) -> bool:
